@@ -233,9 +233,11 @@ button[kind="primary"]:hover {
 # ─────────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
+from train_model import WeightedEnsemble
 
 try:
     from preprocessing import ALL_FEATURES, inverse_transform_target
+
     FEATURES_AVAILABLE = True
 except ImportError:
     FEATURES_AVAILABLE = False
@@ -597,7 +599,7 @@ elif "Insights" in page:
                 path = os.path.join(graph_dir, fname)
                 if os.path.exists(path):
                     with cols[j]:
-                        st.image(path, caption=label, use_container_width=True)
+                        st.image(path, caption=label, width="stretch")
     else:
         st.info("Run `graphs.py` to generate visualizations.")
 
