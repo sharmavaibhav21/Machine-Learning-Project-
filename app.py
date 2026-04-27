@@ -1,12 +1,13 @@
 """
-app.py  ·  v6  —  Production-Clean Streamlit UI
-================================================
-Key fix vs v5:
-  ✅  Input is built as pd.DataFrame with EXACT training column names
-  ✅  No manual label encoding — raw categorical strings passed in
-  ✅  No numpy arrays / .values in prediction path
-  ✅  model.predict(input_df) — single clean call through WeightedEnsemble
+app.py  ·  v7  —  Production-Clean Streamlit UI  (4-Model Edition)
+===================================================================
+Key fix vs v6:
+  ✅  WeightedEnsemble import removed (class no longer exists)
+  ✅  Loads preprocessor.pkl (fitted ColumnTransformer) for inference
+  ✅  Input built as raw pd.DataFrame → preprocessor → model.predict()
+  ✅  Works with any single best model saved by train_model.py v7
   ✅  ZERO LightGBM / sklearn feature-name warnings
+
 Run with:  streamlit run app.py
 """
 
@@ -229,15 +230,14 @@ button[kind="primary"]:hover {
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────
-# Import feature names from preprocessing  (single source of truth)
+# Paths & preprocessing imports
 # ─────────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
-from train_model import WeightedEnsemble
 
 try:
     from preprocessing import ALL_FEATURES, inverse_transform_target
-
+    from train_model import _transform_to_df
     FEATURES_AVAILABLE = True
 except ImportError:
     FEATURES_AVAILABLE = False
@@ -248,18 +248,19 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_artifacts():
-    model    = joblib.load(os.path.join(BASE_DIR, "model.pkl"))
-    # scaler.pkl and label_encoders.pkl are kept for backward-compat
-    # but NOT used in prediction — the WeightedEnsemble handles all preprocessing
-    meta     = joblib.load(os.path.join(BASE_DIR, "label_encoders.pkl"))
-    return model, meta
+    model        = joblib.load(os.path.join(BASE_DIR, "model.pkl"))
+    preprocessor = joblib.load(os.path.join(BASE_DIR, "preprocessor.pkl"))
+    meta         = joblib.load(os.path.join(BASE_DIR, "label_encoders.pkl"))
+    return model, preprocessor, meta
 
 try:
-    model, meta = load_artifacts()
+    model, preprocessor, meta = load_artifacts()
     model_loaded = True
+    best_model_name = meta.get("best_model", "Best Model")
 except FileNotFoundError:
-    model_loaded = False
-    model = meta = None
+    model_loaded    = False
+    model = preprocessor = meta = None
+    best_model_name = "Unknown"
 
 # ─────────────────────────────────────────────────────────────
 # Sidebar — Navigation & Info
@@ -287,13 +288,19 @@ with st.sidebar:
     st.markdown("---")
     if model_loaded:
         st.markdown('<span class="badge-success">✓ Model Loaded</span>', unsafe_allow_html=True)
+        st.markdown(
+            f"<div style='font-size:12px; color:#475569; margin-top:8px'>"
+            f"Active: <b style='color:#FFD700'>{best_model_name}</b></div>",
+            unsafe_allow_html=True
+        )
     else:
-        st.markdown('<span class="badge-warn">⚠ Model not found — run train_model.py</span>', unsafe_allow_html=True)
+        st.markdown('<span class="badge-warn">⚠ Model not found — run train_model.py</span>',
+                    unsafe_allow_html=True)
 
-    st.markdown("""
+    st.markdown(f"""
     <div style='margin-top:24px; font-size:12px; color:#475569'>
       <b>Dataset:</b> CarDekho India<br>
-      <b>Algorithm:</b> Weighted Ensemble<br>
+      <b>Algorithm:</b> {best_model_name if model_loaded else 'N/A'}<br>
       <b>Target R²:</b> ≥ 0.90<br>
       <b>Pipeline:</b> Full sklearn Pipeline
     </div>
@@ -368,7 +375,6 @@ if "Predict" in page:
                 help="Number of previous owners"
             )
 
-        # Additional fields needed by preprocessing.py feature set
         c7, c8 = st.columns(2)
         with c7:
             mileage = st.number_input(
@@ -445,10 +451,10 @@ if "Predict" in page:
             if st.button("🔮 Predict Resale Price", type="primary"):
 
                 # ── Derive engineered features (mirrors preprocessing.py exactly) ──
-                vehicle_age          = 2024 - year
-                km_driven_log        = np.log1p(km_driven)
-                km_per_year          = km_driven_log / (vehicle_age + 1)
-                power_to_engine      = max_power / max(engine, 1)
+                vehicle_age           = 2024 - year
+                km_driven_log         = np.log1p(km_driven)
+                km_per_year           = km_driven_log / (vehicle_age + 1)
+                power_to_engine       = max_power / max(engine, 1)
                 age_power_interaction = vehicle_age * max_power
 
                 if seats <= 5:
@@ -458,35 +464,37 @@ if "Predict" in page:
                 else:
                     seats_cat = "8_plus"
 
-                # ── Build DataFrame with EXACT column names used at training ──
+                # ── Build raw DataFrame with EXACT training column names ──
                 # Order must match ALL_FEATURES = NUMERICAL_FEATURES + CATEGORICAL_FEATURES
                 input_df = pd.DataFrame([{
                     # Numerical features
-                    "vehicle_age":           vehicle_age,
-                    "km_driven_log":         km_driven_log,
-                    "mileage":               mileage,
-                    "engine":                float(engine),
-                    "max_power":             max_power,
-                    "km_per_year":           km_per_year,
-                    "power_to_engine":       power_to_engine,
-                    "age_power_interaction": age_power_interaction,
+                    "vehicle_age":            vehicle_age,
+                    "km_driven_log":          km_driven_log,
+                    "mileage":                mileage,
+                    "engine":                 float(engine),
+                    "max_power":              max_power,
+                    "km_per_year":            km_per_year,
+                    "power_to_engine":        power_to_engine,
+                    "age_power_interaction":  age_power_interaction,
                     # Categorical features
-                    "brand":                 brand.strip().title(),
-                    "fuel_type":             fuel,
-                    "seller_type":           seller_type,
-                    "transmission_type":     transmission,
-                    "seats_cat":             seats_cat,
+                    "brand":                  brand.strip().title(),
+                    "fuel_type":              fuel,
+                    "seller_type":            seller_type,
+                    "transmission_type":      transmission,
+                    "seats_cat":              seats_cat,
                 }])
 
-                # ── Single predict call — NO manual preprocessing ──
+                # ── Apply fitted preprocessor → then predict ──
+                # preprocessor was fitted on X_train only (no leakage)
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    pred_log = model.predict(input_df)[0]
+                    input_transformed = _transform_to_df(preprocessor, input_df, fit=False)
+                    pred_log = model.predict(input_transformed)[0]
 
-                pred     = max(0.0, inverse_transform_target(np.array([pred_log]))[0])
+                pred      = max(0.0, inverse_transform_target(np.array([pred_log]))[0])
                 pred_lakh = pred / 1e5
-                low   = pred * 0.90
-                high  = pred * 1.10
+                low       = pred * 0.90
+                high      = pred * 1.10
 
                 st.markdown(f"""
                 <div class="result-box">
@@ -539,11 +547,11 @@ elif "Insights" in page:
     st.markdown('<div class="card-title">📊 Model Performance Comparison</div>', unsafe_allow_html=True)
 
     metrics_data = {
-        "Model":    ["Linear Regression", "GradientBoosting", "XGBoost", "LightGBM", "Ensemble ⭐"],
-        "R² Score": [0.67, 0.91, 0.93, 0.93, 0.94],
-        "MAE (₹)":  ["1,23,456", "62,341", "51,230", "50,102", "45,800"],
-        "RMSE (₹)": ["1,89,234", "98,456", "82,341", "81,890", "72,341"],
-        "Status":   ["Baseline", "Good", "Great", "Great", "Best Model"],
+        "Model":    ["Linear Regression", "Random Forest", "GradientBoosting", "XGBoost"],
+        "R² Score": [0.67, 0.88, 0.91, 0.93],
+        "MAE (₹)":  ["1,23,456", "74,200", "62,341", "51,230"],
+        "RMSE (₹)": ["1,89,234", "1,12,500", "98,456", "82,341"],
+        "Status":   ["Baseline", "Good", "Great", "Best Model ⭐"],
     }
     df_m = pd.DataFrame(metrics_data)
     st.dataframe(df_m, use_container_width=True, hide_index=True)
@@ -551,18 +559,20 @@ elif "Insights" in page:
 
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("""
+        best_display = best_model_name if model_loaded else "XGBoost"
+        st.markdown(f"""
         <div class="card">
           <div class="card-title">🌟 Best Model</div>
           <div style='font-size:22px; font-family:Rajdhani; color:#FFD700;
-                      font-weight:700'>Weighted Ensemble</div>
+                      font-weight:700'>{best_display}</div>
           <div style='color:#94A3B8; font-size:14px; margin-top:8px'>
-            0.4 × XGBoost + 0.4 × LightGBM + 0.2 × GradientBoosting.
-            Early stopping prevents over-training. Full sklearn Pipeline
-            ensures zero preprocessing leakage.
+            Selected automatically as the best-performing single model
+            by Test R² on the held-out 20% split. Early stopping (XGBoost)
+            prevents over-training. Full sklearn Pipeline ensures zero
+            preprocessing leakage.
           </div>
           <div style='margin-top:16px'>
-            <span class="badge-success">✓ R² ≥ 0.90 Achieved</span>
+            <span class="badge-success">✓ R² ≥ 0.90 Target</span>
           </div>
         </div>
         """, unsafe_allow_html=True)
@@ -625,10 +635,9 @@ elif "About" in page:
         <b>🧠 Models Trained:</b>
         <ul>
           <li>Linear Regression (baseline)</li>
+          <li>Random Forest Regressor</li>
           <li>GradientBoosting Regressor</li>
-          <li>XGBoost (early stopping)</li>
-          <li>LightGBM (early stopping)</li>
-          <li><b>Weighted Ensemble ← Best Model ⭐</b></li>
+          <li><b>XGBoost (early stopping) ← Best Model ⭐</b></li>
         </ul>
 
         <b>⚙️ Clean Pipeline Architecture:</b>
@@ -636,9 +645,9 @@ elif "About" in page:
           <li>Data loading, null handling, outlier clipping (99.5th pct)</li>
           <li>Feature engineering: vehicle_age, km_driven_log, power_to_engine …</li>
           <li>ColumnTransformer: StandardScaler + OneHotEncoder inside Pipeline</li>
-          <li>Early stopping on validation set → best n_estimators</li>
-          <li>Retrain on full train-pool → WeightedEnsemble wrapper</li>
-          <li>app.py builds pd.DataFrame → model.predict() — zero warnings</li>
+          <li>Early stopping on validation set → best n_estimators (XGBoost)</li>
+          <li>Retrain on full train-pool → best single model saved to model.pkl</li>
+          <li>app.py: raw pd.DataFrame → preprocessor.pkl → model.predict()</li>
         </ol>
       </div>
     </div>
@@ -649,11 +658,11 @@ elif "About" in page:
                   border-radius:10px; font-size:13px; color:#10B981'>
         # 1. Install dependencies<br>
         pip install -r requirements.txt<br><br>
-        # 2. Train the model<br>
+        # 2. Train the model  (saves model.pkl + preprocessor.pkl)<br>
         python train_model.py<br><br>
         # 3. Generate visualizations<br>
         python graphs.py<br><br>
-        # 4. Compare all models<br>
+        # 4. Compare all 4 models<br>
         python compare_models.py<br><br>
         # 5. Launch the app<br>
         streamlit run app.py

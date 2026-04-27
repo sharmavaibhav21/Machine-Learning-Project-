@@ -1,24 +1,14 @@
 """
-compare_models.py  ·  v6  —  Production-Clean Full Model Comparison
-====================================================================
-Key fixes vs v5
-───────────────
-  ✅  UserWarning / FutureWarning suppressed at module level
-  ✅  ALL splits remain pd.DataFrame — no .values / np.array conversions
-  ✅  _transform_to_df returns DataFrame with column names (LightGBM safe)
-  ✅  DataFrames passed directly to .fit() / .predict() for all models
-  ✅  Same _transform_to_df helper imported from train_model (single source)
-  ✅  RepeatedKFold (5×2) CV via sklearn Pipeline → zero leakage
-  ✅  Reports Train / CV / Test R² and overfit gap for every model
-
+compare_models.py  ·  v7  —  4-Model Comparison
+================================================
 Models
 ──────
   1. Linear Regression
   2. Random Forest
   3. GradientBoostingRegressor
   4. XGBoost  (early stopping)
-  5. LightGBM (early stopping)
-  6. Weighted Ensemble (0.4·XGB + 0.4·LGB + 0.2·GBR)
+
+Removed: LightGBM, Weighted Ensemble
 """
 
 import os
@@ -45,14 +35,6 @@ except ImportError:
     XGB_OK = False
     print("⚠️  pip install xgboost")
 
-try:
-    import lightgbm as lgb
-    from lightgbm import LGBMRegressor
-    LGB_OK = True
-except ImportError:
-    LGB_OK = False
-    print("⚠️  pip install lightgbm")
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from preprocessing import (
     load_and_preprocess, inverse_transform_target,
@@ -61,9 +43,8 @@ from preprocessing import (
 # Reuse model configs and DataFrame-preserving helpers from train_model
 from train_model import (
     _transform_to_df, _build_pipe, _metrics_orig,
-    _xgb_config, _lgb_config, _gbr_config,
-    _train_xgb_early_stop, _train_lgb_early_stop,
-    WeightedEnsemble,
+    _xgb_config, _gbr_config,
+    _train_xgb_early_stop,
     ES_ROUNDS, RANDOM_STATE, TEST_SIZE, VAL_SIZE
 )
 
@@ -111,7 +92,7 @@ def _eval_row(name: str,
 def _print_table(df_r: pd.DataFrame):
     W = 92
     print("\n" + "═" * W)
-    print("          MODEL COMPARISON  ·  v6  (original ₹ scale — overfit gap tracking)")
+    print("          MODEL COMPARISON  ·  v7  (original ₹ scale — overfit gap tracking)")
     print("═" * W)
     hdr = (f"  {'#':<3}{'Model':<22}{'Train R²':>10}{'CV R²':>9}"
            f"{'CV±':>7}{'Test R²':>10}{'Gap':>8}{'MAE ₹':>12}{'RMSE ₹':>12}")
@@ -137,14 +118,13 @@ def _print_table(df_r: pd.DataFrame):
 
 def main():
     print("=" * 75)
-    print("   CAR RESALE PRICE  ·  v6 FULL MODEL COMPARISON")
-    print("   Production-clean  |  Target: Test R² ≥ 0.90 + Gap ≤ 0.03")
+    print("   CAR RESALE PRICE  ·  v7  4-MODEL COMPARISON")
+    print("   Target: Test R² ≥ 0.90 + Gap ≤ 0.03")
     print("=" * 75)
 
     # ── Data ──────────────────────────────────────────────────────────────────
     print("\n[1/4] Loading & preprocessing …")
     X, y_log, feat_names, preprocessor = load_and_preprocess(DATA_PATH)
-    # X is pd.DataFrame — preserved from here to predictions
 
     # ── Splits ────────────────────────────────────────────────────────────────
     print("\n[2/4] Splitting data …")
@@ -159,7 +139,7 @@ def main():
 
     # ── Fit preprocessor ONCE on X_train (no leakage) ─────────────────────────
     print("\n[3/4] Transforming splits (preprocessor fit on X_train only) …")
-    X_train_t = _transform_to_df(preprocessor, X_train, fit=True)   # fits here
+    X_train_t = _transform_to_df(preprocessor, X_train, fit=True)
     X_val_t   = _transform_to_df(preprocessor, X_val,   fit=False)
     X_pool_t  = _transform_to_df(preprocessor, X_pool,  fit=False)
     X_test_t  = _transform_to_df(preprocessor, X_test,  fit=False)
@@ -167,29 +147,29 @@ def main():
     print(f"      Transformed feature count : {len(col_names)}")
     print(f"      All splits type           : {type(X_train_t).__name__}  ✅")
 
-    # ── Train all models ──────────────────────────────────────────────────────
+    # ── Train all 4 models ────────────────────────────────────────────────────
     print("\n[4/4] Training all models …\n")
     results    = []
     all_models : dict = {}
     best_n    : dict = {}
 
     # 1. Linear Regression
-    print("   [1/6] Linear Regression …")
+    print("   [1/4] Linear Regression …")
     lr = LinearRegression()
-    lr.fit(X_pool_t, y_pool)           # X_pool_t is DataFrame ✅
+    lr.fit(X_pool_t, y_pool)
     all_models["Linear Regression"] = lr
     cv_m, cv_s = _cv_r2(preprocessor, LinearRegression, X, y_log)
     results.append(_eval_row("Linear Regression", lr,
                              X_pool_t, y_pool, X_test_t, y_test, cv_m, cv_s))
 
     # 2. Random Forest (regularised)
-    print("   [2/6] Random Forest …")
+    print("   [2/4] Random Forest …")
     rf = RandomForestRegressor(
         n_estimators=600, max_depth=20,
         min_samples_split=10, min_samples_leaf=5,
         max_features="sqrt", random_state=RANDOM_STATE, n_jobs=-1
     )
-    rf.fit(X_pool_t, y_pool)           # DataFrame ✅
+    rf.fit(X_pool_t, y_pool)
     all_models["Random Forest"] = rf
     cv_m, cv_s = _cv_r2(
         preprocessor,
@@ -204,9 +184,9 @@ def main():
                              X_pool_t, y_pool, X_test_t, y_test, cv_m, cv_s))
 
     # 3. GradientBoosting
-    print("   [3/6] GradientBoosting …")
+    print("   [3/4] GradientBoosting …")
     gbr = _gbr_config(n_est=600)
-    gbr.fit(X_pool_t, y_pool)          # DataFrame ✅
+    gbr.fit(X_pool_t, y_pool)
     all_models["GradientBoosting"] = gbr
     cv_m, cv_s = _cv_r2(preprocessor, lambda: _gbr_config(600), X, y_log)
     results.append(_eval_row("GradientBoosting", gbr,
@@ -214,9 +194,9 @@ def main():
 
     # 4. XGBoost (early stopping)
     if XGB_OK:
-        print("   [4/6] XGBoost (early stopping) …")
+        print("   [4/4] XGBoost (early stopping) …")
         _, best_n["xgb"] = _train_xgb_early_stop(
-            X_train_t, y_train, X_val_t, y_val   # DataFrames ✅
+            X_train_t, y_train, X_val_t, y_val
         )
         xgb = _xgb_config(n_est=best_n["xgb"])
         xgb.fit(X_pool_t, y_pool)
@@ -227,59 +207,7 @@ def main():
         results.append(_eval_row("XGBoost", xgb,
                                  X_pool_t, y_pool, X_test_t, y_test, cv_m, cv_s))
     else:
-        print("   [4/6] XGBoost — SKIPPED (not installed)")
-
-    # 5. LightGBM (early stopping)
-    if LGB_OK:
-        print("   [5/6] LightGBM (early stopping) …")
-        _, best_n["lgb"] = _train_lgb_early_stop(
-            X_train_t, y_train, X_val_t, y_val   # DataFrames ✅
-        )
-        lgbm = _lgb_config(n_est=best_n["lgb"])
-        lgbm.fit(X_pool_t, y_pool)
-        all_models["LightGBM"] = lgbm
-        cv_m, cv_s = _cv_r2(preprocessor,
-                              lambda: _lgb_config(best_n.get("lgb", 800)),
-                              X, y_log)
-        results.append(_eval_row("LightGBM", lgbm,
-                                 X_pool_t, y_pool, X_test_t, y_test, cv_m, cv_s))
-    else:
-        print("   [5/6] LightGBM — SKIPPED (not installed)")
-
-    # 6. Weighted Ensemble
-    print("   [6/6] Weighted Ensemble (0.4·XGB + 0.4·LGB + 0.2·GBR) …")
-    w_map       = {"XGBoost": 0.40, "LightGBM": 0.40, "GradientBoosting": 0.20}
-    ens_members = [
-        (all_models[n], w_map[n], n)
-        for n in all_models if n in w_map
-    ]
-    if len(ens_members) >= 2:
-        ens_pred  = np.zeros(len(X_test_t))
-        pool_pred = np.zeros(len(X_pool_t))
-        tw = 0.0
-        for m, w, _ in ens_members:
-            ens_pred  += w * m.predict(X_test_t)   # DataFrame ✅
-            pool_pred += w * m.predict(X_pool_t)   # DataFrame ✅
-            tw        += w
-        ens_pred  /= tw
-        pool_pred /= tw
-        ens_te_r2, ens_mae, ens_rmse = _metrics_orig(y_test, ens_pred)
-        ens_tr_r2, _, _              = _metrics_orig(y_pool, pool_pred)
-        booster_cvs = [r["CV R²"] for r in results
-                       if r["Model"] in ("XGBoost", "LightGBM", "GradientBoosting")]
-        ens_cv = float(np.mean(booster_cvs)) if booster_cvs else 0.0
-        results.append({
-            "Model":    "ENSEMBLE ⭐",
-            "Train R²": round(ens_tr_r2, 4),
-            "CV R²":    round(ens_cv,    4),
-            "CV±":      0.0,
-            "Test R²":  round(ens_te_r2, 4),
-            "Gap":      round(ens_cv - ens_te_r2, 4),
-            "MAE ₹":    int(ens_mae),
-            "RMSE ₹":   int(ens_rmse),
-        })
-    else:
-        print("      (Not enough booster models for ensemble)")
+        print("   [4/4] XGBoost — SKIPPED (not installed)")
 
     # ── Print table ───────────────────────────────────────────────────────────
     df_r = pd.DataFrame(results).sort_values("Test R²", ascending=False)
@@ -299,7 +227,7 @@ def main():
     print(f"    RMSE       : ₹{best['RMSE ₹']:,}")
 
     # Feature importances for best tree-based model
-    tree_names = ["XGBoost", "LightGBM", "GradientBoosting", "Random Forest"]
+    tree_names = ["XGBoost", "GradientBoosting", "Random Forest"]
     best_tree  = next((n for n in df_r["Model"] if n in tree_names), None)
     if best_tree and best_tree in all_models:
         m = all_models[best_tree]

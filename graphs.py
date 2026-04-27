@@ -23,16 +23,21 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import seaborn as sns
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.linear_model import LinearRegression
-from sklearn.tree import DecisionTreeRegressor
-from sklearn.svm import SVR
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import r2_score
 import matplotlib
 matplotlib.use("Agg")
 import warnings
 warnings.filterwarnings("ignore")
+
+try:
+    from xgboost import XGBRegressor
+    XGB_OK = True
+except ImportError:
+    XGB_OK = False
+    print("⚠️  pip install xgboost  (XGBoost will be skipped in graph 05)")
 
 sys.path.insert(0, os.path.dirname(__file__))
 from preprocessing import load_and_preprocess
@@ -161,38 +166,53 @@ def plot_correlation_heatmap():
 # ── 5. Model Comparison ───────────────────────────────────────────────────────
 def plot_model_comparison():
     X, y, _, _ = load_and_preprocess(DATA_PATH)
-    X = X.select_dtypes(include=["number"])
+    X_num = X.select_dtypes(include=["number"])
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
+        X_num, y, test_size=0.2, random_state=42
     )
     scaler = StandardScaler()
     X_tr_s = scaler.fit_transform(X_train)
     X_te_s = scaler.transform(X_test)
 
-    models = {
-        "Linear\nRegression": (LinearRegression(), X_tr_s, X_te_s),
-        "Decision\nTree":     (DecisionTreeRegressor(max_depth=12, random_state=42),
-                               X_train, X_test),
-        "Random\nForest":     (RandomForestRegressor(n_estimators=300, max_depth=25,
-                                                     random_state=42, n_jobs=-1),
-                               X_train, X_test),
-        "SVR":                (SVR(kernel="rbf", C=100, gamma="scale"), X_tr_s, X_te_s),
-    }
+    # 4 models: Linear Regression, Random Forest, GradientBoosting, XGBoost
+    model_specs = [
+        ("Linear\nRegression",
+         LinearRegression(), X_tr_s, X_te_s),
+        ("Random\nForest",
+         RandomForestRegressor(n_estimators=300, max_depth=25,
+                               random_state=42, n_jobs=-1),
+         X_train, X_test),
+        ("Gradient\nBoosting",
+         GradientBoostingRegressor(n_estimators=300, max_depth=5,
+                                   learning_rate=0.05, random_state=42),
+         X_train, X_test),
+    ]
+    if XGB_OK:
+        model_specs.append((
+            "XGBoost",
+            XGBRegressor(n_estimators=300, max_depth=5, learning_rate=0.05,
+                         subsample=0.70, colsample_bytree=0.70,
+                         tree_method="hist", random_state=42,
+                         n_jobs=-1, verbosity=0),
+            X_train, X_test,
+        ))
 
     names, r2_scores = [], []
-    for name, (m, Xtr, Xte) in models.items():
-        m.fit(Xtr, y_train)
-        r2_scores.append(r2_score(y_test, m.predict(Xte)))
+    for name, model, Xtr, Xte in model_specs:
+        model.fit(Xtr, y_train)
+        r2_scores.append(r2_score(y_test, model.predict(Xte)))
         names.append(name)
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    bars = ax.bar(names, r2_scores, color=MODEL_COLORS, width=0.5,
+    fig, ax = plt.subplots(figsize=(11, 6))
+    bars = ax.bar(names, r2_scores,
+                  color=MODEL_COLORS[:len(names)], width=0.5,
                   edgecolor="white", linewidth=1.2)
     ax.axhline(0.90, color=COLORS["accent1"], linestyle="--",
-               linewidth=2, label="Target R\u00b2 = 0.90")
+               linewidth=2, label="Target R² = 0.90")
     ax.set_ylim(0, 1.05)
-    ax.set_ylabel("R\u00b2 Score")
-    ax.set_title("Model Comparison \u2014 R\u00b2 Score", fontsize=14, fontweight="bold")
+    ax.set_ylabel("R² Score")
+    ax.set_title("Model Comparison — R² Score  (4 Models)",
+                 fontsize=14, fontweight="bold")
     ax.legend()
     for bar, val in zip(bars, r2_scores):
         ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
